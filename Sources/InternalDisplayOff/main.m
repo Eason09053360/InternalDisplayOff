@@ -11,6 +11,7 @@ enum {
 @interface AppDelegate : NSObject <NSApplicationDelegate>
 @property(nonatomic, strong) NSStatusItem *statusItem;
 @property(nonatomic, strong) NSWindow *blackoutWindow;
+@property(nonatomic, strong) NSTimer *pointerGuardTimer;
 @property(nonatomic, assign) CGDirectDisplayID builtInDisplayID;
 @property(nonatomic, assign) float previousBrightness;
 @property(nonatomic, assign) BOOL hasPreviousBrightness;
@@ -69,6 +70,7 @@ enum {
     [self setBrightness:0.0f forDisplay:builtIn];
     [self showBlackoutWindowOnDisplay:builtIn];
     [self movePointerToExternalDisplayIfNeededFromDisplay:builtIn];
+    [self startPointerGuard];
 
     self.statusItem.button.title = @"Internal Dimmed";
 }
@@ -81,6 +83,7 @@ enum {
 
     [self.blackoutWindow orderOut:nil];
     self.blackoutWindow = nil;
+    [self stopPointerGuard];
 
     if (self.builtInDisplayID != kCGNullDirectDisplay && self.hasPreviousBrightness) {
         [self setBrightness:MAX(self.previousBrightness, 0.25f) forDisplay:self.builtInDisplayID];
@@ -203,7 +206,7 @@ enum {
 - (void)movePointerToExternalDisplayIfNeededFromDisplay:(CGDirectDisplayID)builtInDisplayID {
     NSPoint mouseLocation = NSEvent.mouseLocation;
     NSScreen *currentScreen = nil;
-    NSScreen *externalScreen = nil;
+    NSScreen *externalScreen = [self nearestExternalScreenToPoint:mouseLocation excludingDisplay:builtInDisplayID];
 
     for (NSScreen *screen in [NSScreen screens]) {
         NSNumber *screenNumber = screen.deviceDescription[@"NSScreenNumber"];
@@ -214,10 +217,6 @@ enum {
         if (NSPointInRect(mouseLocation, screen.frame)) {
             currentScreen = screen;
         }
-
-        if (screenNumber.unsignedIntValue != builtInDisplayID && externalScreen == nil) {
-            externalScreen = screen;
-        }
     }
 
     if (currentScreen == nil || externalScreen == nil) {
@@ -226,9 +225,64 @@ enum {
 
     NSNumber *currentScreenNumber = currentScreen.deviceDescription[@"NSScreenNumber"];
     if (currentScreenNumber != nil && currentScreenNumber.unsignedIntValue == builtInDisplayID) {
-        CGPoint target = CGPointMake(NSMidX(externalScreen.frame), NSMidY(externalScreen.frame));
+        CGPoint target = [self safePointOnScreen:externalScreen nearPoint:mouseLocation];
         CGWarpMouseCursorPosition(target);
     }
+}
+
+- (void)startPointerGuard {
+    [self stopPointerGuard];
+    self.pointerGuardTimer = [NSTimer scheduledTimerWithTimeInterval:0.05
+                                                              target:self
+                                                            selector:@selector(pointerGuardTick:)
+                                                            userInfo:nil
+                                                             repeats:YES];
+}
+
+- (void)stopPointerGuard {
+    [self.pointerGuardTimer invalidate];
+    self.pointerGuardTimer = nil;
+}
+
+- (void)pointerGuardTick:(NSTimer *)timer {
+    if (self.builtInDisplayID == kCGNullDirectDisplay || self.blackoutWindow == nil) {
+        return;
+    }
+
+    [self movePointerToExternalDisplayIfNeededFromDisplay:self.builtInDisplayID];
+}
+
+- (NSScreen *)nearestExternalScreenToPoint:(NSPoint)point excludingDisplay:(CGDirectDisplayID)builtInDisplayID {
+    NSScreen *nearestScreen = nil;
+    CGFloat nearestDistance = CGFLOAT_MAX;
+
+    for (NSScreen *screen in [NSScreen screens]) {
+        NSNumber *screenNumber = screen.deviceDescription[@"NSScreenNumber"];
+        if (screenNumber == nil || screenNumber.unsignedIntValue == builtInDisplayID) {
+            continue;
+        }
+
+        NSPoint clampedPoint = NSMakePoint(MIN(MAX(point.x, NSMinX(screen.frame)), NSMaxX(screen.frame)),
+                                           MIN(MAX(point.y, NSMinY(screen.frame)), NSMaxY(screen.frame)));
+        CGFloat dx = point.x - clampedPoint.x;
+        CGFloat dy = point.y - clampedPoint.y;
+        CGFloat distance = dx * dx + dy * dy;
+
+        if (distance < nearestDistance) {
+            nearestDistance = distance;
+            nearestScreen = screen;
+        }
+    }
+
+    return nearestScreen;
+}
+
+- (CGPoint)safePointOnScreen:(NSScreen *)screen nearPoint:(NSPoint)point {
+    CGFloat inset = 8.0;
+    NSRect frame = NSInsetRect(screen.frame, inset, inset);
+    CGFloat x = MIN(MAX(point.x, NSMinX(frame)), NSMaxX(frame));
+    CGFloat y = MIN(MAX(point.y, NSMinY(frame)), NSMaxY(frame));
+    return CGPointMake(x, y);
 }
 
 - (BOOL)setDisplay:(CGDirectDisplayID)displayID enabled:(bool)enabled {

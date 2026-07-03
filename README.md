@@ -2,7 +2,7 @@
 
 A tiny macOS menu bar app that hides a MacBook's built-in display when an external display is connected.
 
-It is intentionally small: launch the app, and it dims the built-in display, places a black fullscreen cover over it, and keeps the external display usable. Use the menu bar item to restore the internal display or quit.
+It is intentionally small: launch the app, and it dims the built-in display, places a black fullscreen cover over it, keeps the pointer on an external display, and leaves the external display usable. Use the menu bar item to restore the internal display or quit.
 
 ## What it does
 
@@ -11,9 +11,9 @@ It is intentionally small: launch the app, and it dims the built-in display, pla
 - Saves the current built-in display brightness.
 - Sets the built-in display brightness to zero.
 - Places a black fullscreen window over the built-in display.
-- Moves the pointer to an external display if needed.
+- Keeps the pointer from slipping into the built-in display space.
 - Keeps a menu bar item available for restoring the display.
-- Restores the cover and brightness when the app quits normally.
+- Restores the cover, pointer guard, and brightness when the app quits normally.
 
 ## Important limitations
 
@@ -41,7 +41,7 @@ Earlier versions of this project attempted to call the private display-disable A
 - a disabled display may disappear from display discovery APIs, so restoration must rely on a cached ID
 - dynamic stack arrays are unnecessary for display enumeration
 
-The current default is a safer visual-off mode. It is less "true off" than a display disconnect, but it is recoverable and better suited for general use.
+The current default is a safer visual-off mode with a pointer guard. It is less "true off" than a display disconnect, but it avoids the most annoying daily issue without taking over the system display stack.
 
 ## Requirements
 
