@@ -12,6 +12,7 @@ It is intentionally small: launch the app, and it dims the built-in display, pla
 - Sets the built-in display brightness to zero, trying DisplayServices first and falling back to IOKit.
 - Places a black fullscreen window over the built-in display.
 - Keeps the pointer from slipping into the built-in display space with an event-driven guard.
+- Automatically restores the built-in display if the external display disconnects.
 - Keeps a menu bar item available for restoring the display.
 - Restores the cover, pointer guard, and brightness when the app quits normally.
 
@@ -31,6 +32,8 @@ Hard-disable mode has serious caveats:
 - if anything behaves oddly, rebooting should restore macOS' normal display state
 
 The app refuses to hide or hard-disable the internal display unless an external display is active.
+
+If the external display is unplugged while the built-in display is hidden, the app listens for the macOS display reconfiguration event and restores the built-in display automatically.
 
 The pointer guard uses a listen-only `CGEventTap` when macOS allows it, and falls back to `NSEvent` mouse monitors if the event tap cannot be created. This avoids constant timer polling during pointer-heavy work such as games.
 

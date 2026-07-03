@@ -24,6 +24,7 @@ typedef int (*DisplayServicesSetBrightnessFunction)(CGDirectDisplayID display, f
 @property(nonatomic, assign) BOOL hasPreviousBrightness;
 @property(nonatomic, assign) BOOL hardDisabled;
 - (void)enablePointerEventTap;
+- (void)handleDisplayConfigurationChanged;
 - (void)handlePointerMovement;
 @end
 
@@ -38,17 +39,26 @@ static CGEventRef PointerGuardEventCallback(CGEventTapProxy proxy, CGEventType t
     return event;
 }
 
+static void DisplayConfigurationCallback(CGDirectDisplayID display, CGDisplayChangeSummaryFlags flags, void *userInfo) {
+    AppDelegate *delegate = (__bridge AppDelegate *)userInfo;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [delegate handleDisplayConfigurationChanged];
+    });
+}
+
 @implementation AppDelegate
 
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
     [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
     self.builtInDisplayID = kCGNullDirectDisplay;
+    CGDisplayRegisterReconfigurationCallback(DisplayConfigurationCallback, (__bridge void *)self);
     [self setupStatusItem];
     [self dimAndCoverInternalDisplay:nil];
 }
 
 - (void)applicationWillTerminate:(NSNotification *)notification {
     [self restoreInternalDisplay:nil];
+    CGDisplayRemoveReconfigurationCallback(DisplayConfigurationCallback, (__bridge void *)self);
 }
 
 - (void)setupStatusItem {
@@ -179,6 +189,24 @@ static CGEventRef PointerGuardEventCallback(CGEventTapProxy proxy, CGEventType t
     }
 
     return NO;
+}
+
+- (void)handleDisplayConfigurationChanged {
+    BOOL displayIsHidden = self.blackoutWindow != nil || self.hardDisabled;
+    if (!displayIsHidden) {
+        return;
+    }
+
+    if (![self hasActiveExternalDisplay]) {
+        [self restoreInternalDisplay:nil];
+        self.statusItem.button.title = @"Display Restored";
+        return;
+    }
+
+    if (self.blackoutWindow != nil && self.builtInDisplayID != kCGNullDirectDisplay) {
+        [self showBlackoutWindowOnDisplay:self.builtInDisplayID];
+        [self movePointerToExternalDisplayIfNeededFromDisplay:self.builtInDisplayID];
+    }
 }
 
 - (void)showBlackoutWindowOnDisplay:(CGDirectDisplayID)displayID {
