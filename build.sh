@@ -12,7 +12,8 @@ clang "$ROOT/Sources/InternalDisplayOff/main.m" \
   -o "$EXECUTABLE" \
   -fobjc-arc \
   -framework Cocoa \
-  -framework CoreGraphics
+  -framework CoreGraphics \
+  -framework IOKit
 
 cp "$ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
 chmod +x "$EXECUTABLE"

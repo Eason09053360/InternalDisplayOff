@@ -1,43 +1,54 @@
 #import <Cocoa/Cocoa.h>
 #import <CoreGraphics/CoreGraphics.h>
+#import <IOKit/graphics/IOGraphicsLib.h>
 
 extern CGError CGSConfigureDisplayEnabled(CGDisplayConfigRef config, CGDirectDisplayID display, bool enabled);
 
+enum {
+    kMaxDisplays = 16
+};
+
 @interface AppDelegate : NSObject <NSApplicationDelegate>
 @property(nonatomic, strong) NSStatusItem *statusItem;
+@property(nonatomic, strong) NSWindow *blackoutWindow;
 @property(nonatomic, assign) CGDirectDisplayID builtInDisplayID;
-@property(nonatomic, assign) BOOL internalDisplayDisconnected;
+@property(nonatomic, assign) float previousBrightness;
+@property(nonatomic, assign) BOOL hasPreviousBrightness;
+@property(nonatomic, assign) BOOL hardDisabled;
 @end
 
 @implementation AppDelegate
 
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
     [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
+    self.builtInDisplayID = kCGNullDirectDisplay;
     [self setupStatusItem];
-    [self disconnectInternalDisplay:nil];
+    [self dimAndCoverInternalDisplay:nil];
 }
 
 - (void)applicationWillTerminate:(NSNotification *)notification {
-    [self reconnectInternalDisplay:nil];
+    [self restoreInternalDisplay:nil];
 }
 
 - (void)setupStatusItem {
     self.statusItem = [[NSStatusBar systemStatusBar] statusItemWithLength:NSVariableStatusItemLength];
-    self.statusItem.button.title = @"Internal Off";
+    self.statusItem.button.title = @"Internal Dimmed";
 
     NSMenu *menu = [[NSMenu alloc] init];
-    [menu addItemWithTitle:@"Turn Off Internal Display" action:@selector(disconnectInternalDisplay:) keyEquivalent:@"o"];
-    [menu addItemWithTitle:@"Restore Internal Display" action:@selector(reconnectInternalDisplay:) keyEquivalent:@"r"];
+    [menu addItemWithTitle:@"Dim + Cover Internal Display" action:@selector(dimAndCoverInternalDisplay:) keyEquivalent:@"d"];
+    [menu addItemWithTitle:@"Restore Internal Display" action:@selector(restoreInternalDisplay:) keyEquivalent:@"r"];
+    [menu addItem:[NSMenuItem separatorItem]];
+    [menu addItemWithTitle:@"Experimental Hard Disable..." action:@selector(experimentalHardDisable:) keyEquivalent:@"e"];
     [menu addItem:[NSMenuItem separatorItem]];
     [menu addItemWithTitle:@"Quit" action:@selector(quit:) keyEquivalent:@"q"];
     self.statusItem.menu = menu;
 }
 
-- (IBAction)disconnectInternalDisplay:(id)sender {
-    CGDirectDisplayID builtIn = [self builtInDisplayIDFromOnlineDisplays];
+- (IBAction)dimAndCoverInternalDisplay:(id)sender {
+    CGDirectDisplayID builtIn = [self builtInDisplayIDFromActiveDisplays];
     if (builtIn == kCGNullDirectDisplay) {
         [self showAlertWithTitle:@"No built-in display found"
-                         message:@"This Mac does not report a built-in display."];
+                         message:@"This Mac does not report an active built-in display."];
         return;
     }
 
@@ -48,28 +59,62 @@ extern CGError CGSConfigureDisplayEnabled(CGDisplayConfigRef config, CGDirectDis
     }
 
     self.builtInDisplayID = builtIn;
-    if ([self setDisplay:builtIn enabled:false]) {
-        self.internalDisplayDisconnected = YES;
-        self.statusItem.button.title = @"Internal Off";
-    } else {
-        [self showAlertWithTitle:@"Could not turn off the internal display"
-                         message:@"macOS rejected the display change on this machine or OS version."];
+
+    float brightness = 1.0f;
+    if ([self readBrightness:&brightness forDisplay:builtIn]) {
+        self.previousBrightness = brightness;
+        self.hasPreviousBrightness = YES;
     }
+
+    [self setBrightness:0.0f forDisplay:builtIn];
+    [self showBlackoutWindowOnDisplay:builtIn];
+    [self movePointerToExternalDisplayIfNeededFromDisplay:builtIn];
+
+    self.statusItem.button.title = @"Internal Dimmed";
 }
 
-- (IBAction)reconnectInternalDisplay:(id)sender {
-    CGDirectDisplayID displayID = self.builtInDisplayID;
-    if (displayID == kCGNullDirectDisplay) {
-        displayID = [self builtInDisplayIDFromOnlineDisplays];
+- (IBAction)restoreInternalDisplay:(id)sender {
+    if (self.hardDisabled && self.builtInDisplayID != kCGNullDirectDisplay) {
+        [self setDisplay:self.builtInDisplayID enabled:true];
+        self.hardDisabled = NO;
     }
 
-    if (displayID == kCGNullDirectDisplay) {
+    [self.blackoutWindow orderOut:nil];
+    self.blackoutWindow = nil;
+
+    if (self.builtInDisplayID != kCGNullDirectDisplay && self.hasPreviousBrightness) {
+        [self setBrightness:MAX(self.previousBrightness, 0.25f) forDisplay:self.builtInDisplayID];
+    }
+
+    self.statusItem.button.title = @"Display Ready";
+}
+
+- (IBAction)experimentalHardDisable:(id)sender {
+    CGDirectDisplayID builtIn = [self builtInDisplayIDFromActiveDisplays];
+    if (builtIn == kCGNullDirectDisplay || ![self hasActiveExternalDisplay]) {
+        [self showAlertWithTitle:@"External display required"
+                         message:@"Hard disable is only available while an external display is active."];
         return;
     }
 
-    if ([self setDisplay:displayID enabled:true]) {
-        self.internalDisplayDisconnected = NO;
-        self.statusItem.button.title = @"Display Ready";
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.messageText = @"Experimental hard disable";
+    alert.informativeText = @"This uses a private macOS API. It can fail on Apple Silicon and may require a reboot if the app is killed before restore. Use the safer dim + cover mode unless you are testing.";
+    [alert addButtonWithTitle:@"Cancel"];
+    [alert addButtonWithTitle:@"Hard Disable"];
+    alert.alertStyle = NSAlertStyleCritical;
+
+    if ([alert runModal] != NSAlertSecondButtonReturn) {
+        return;
+    }
+
+    self.builtInDisplayID = builtIn;
+    if ([self setDisplay:builtIn enabled:false]) {
+        self.hardDisabled = YES;
+        self.statusItem.button.title = @"Internal Disabled";
+    } else {
+        [self showAlertWithTitle:@"Could not hard disable the internal display"
+                         message:@"macOS rejected the private display configuration call on this machine or OS version."];
     }
 }
 
@@ -77,15 +122,14 @@ extern CGError CGSConfigureDisplayEnabled(CGDisplayConfigRef config, CGDirectDis
     [NSApp terminate:nil];
 }
 
-- (CGDirectDisplayID)builtInDisplayIDFromOnlineDisplays {
+- (CGDirectDisplayID)builtInDisplayIDFromActiveDisplays {
     CGDisplayCount count = 0;
-    CGGetOnlineDisplayList(UINT32_MAX, NULL, &count);
-    if (count == 0) {
+    CGDirectDisplayID displays[kMaxDisplays] = {0};
+
+    CGError error = CGGetActiveDisplayList(kMaxDisplays, displays, &count);
+    if (error != kCGErrorSuccess) {
         return kCGNullDirectDisplay;
     }
-
-    CGDirectDisplayID displays[count];
-    CGGetOnlineDisplayList(count, displays, &count);
 
     for (CGDisplayCount index = 0; index < count; index++) {
         if (CGDisplayIsBuiltin(displays[index])) {
@@ -98,13 +142,12 @@ extern CGError CGSConfigureDisplayEnabled(CGDisplayConfigRef config, CGDirectDis
 
 - (BOOL)hasActiveExternalDisplay {
     CGDisplayCount count = 0;
-    CGGetActiveDisplayList(UINT32_MAX, NULL, &count);
-    if (count == 0) {
+    CGDirectDisplayID displays[kMaxDisplays] = {0};
+
+    CGError error = CGGetActiveDisplayList(kMaxDisplays, displays, &count);
+    if (error != kCGErrorSuccess) {
         return NO;
     }
-
-    CGDirectDisplayID displays[count];
-    CGGetActiveDisplayList(count, displays, &count);
 
     for (CGDisplayCount index = 0; index < count; index++) {
         if (!CGDisplayIsBuiltin(displays[index])) {
@@ -113,6 +156,79 @@ extern CGError CGSConfigureDisplayEnabled(CGDisplayConfigRef config, CGDirectDis
     }
 
     return NO;
+}
+
+- (void)showBlackoutWindowOnDisplay:(CGDirectDisplayID)displayID {
+    NSScreen *targetScreen = nil;
+    for (NSScreen *screen in [NSScreen screens]) {
+        NSNumber *screenNumber = screen.deviceDescription[@"NSScreenNumber"];
+        if (screenNumber != nil && screenNumber.unsignedIntValue == displayID) {
+            targetScreen = screen;
+            break;
+        }
+    }
+
+    if (targetScreen == nil) {
+        return;
+    }
+
+    [self.blackoutWindow orderOut:nil];
+
+    NSWindow *window = [[NSWindow alloc] initWithContentRect:targetScreen.frame
+                                                   styleMask:NSWindowStyleMaskBorderless
+                                                     backing:NSBackingStoreBuffered
+                                                       defer:NO
+                                                      screen:targetScreen];
+    window.backgroundColor = NSColor.blackColor;
+    window.opaque = YES;
+    window.level = NSScreenSaverWindowLevel;
+    window.collectionBehavior = NSWindowCollectionBehaviorCanJoinAllSpaces |
+                                NSWindowCollectionBehaviorFullScreenAuxiliary |
+                                NSWindowCollectionBehaviorStationary;
+    window.ignoresMouseEvents = YES;
+    [window makeKeyAndOrderFront:nil];
+    self.blackoutWindow = window;
+}
+
+- (BOOL)readBrightness:(float *)brightness forDisplay:(CGDirectDisplayID)displayID {
+    io_service_t service = CGDisplayIOServicePort(displayID);
+    return IODisplayGetFloatParameter(service, kNilOptions, CFSTR(kIODisplayBrightnessKey), brightness) == kIOReturnSuccess;
+}
+
+- (void)setBrightness:(float)brightness forDisplay:(CGDirectDisplayID)displayID {
+    io_service_t service = CGDisplayIOServicePort(displayID);
+    IODisplaySetFloatParameter(service, kNilOptions, CFSTR(kIODisplayBrightnessKey), brightness);
+}
+
+- (void)movePointerToExternalDisplayIfNeededFromDisplay:(CGDirectDisplayID)builtInDisplayID {
+    NSPoint mouseLocation = NSEvent.mouseLocation;
+    NSScreen *currentScreen = nil;
+    NSScreen *externalScreen = nil;
+
+    for (NSScreen *screen in [NSScreen screens]) {
+        NSNumber *screenNumber = screen.deviceDescription[@"NSScreenNumber"];
+        if (screenNumber == nil) {
+            continue;
+        }
+
+        if (NSPointInRect(mouseLocation, screen.frame)) {
+            currentScreen = screen;
+        }
+
+        if (screenNumber.unsignedIntValue != builtInDisplayID && externalScreen == nil) {
+            externalScreen = screen;
+        }
+    }
+
+    if (currentScreen == nil || externalScreen == nil) {
+        return;
+    }
+
+    NSNumber *currentScreenNumber = currentScreen.deviceDescription[@"NSScreenNumber"];
+    if (currentScreenNumber != nil && currentScreenNumber.unsignedIntValue == builtInDisplayID) {
+        CGPoint target = CGPointMake(NSMidX(externalScreen.frame), NSMidY(externalScreen.frame));
+        CGWarpMouseCursorPosition(target);
+    }
 }
 
 - (BOOL)setDisplay:(CGDirectDisplayID)displayID enabled:(bool)enabled {
