@@ -1,6 +1,7 @@
 #import <Cocoa/Cocoa.h>
 #import <CoreGraphics/CoreGraphics.h>
 #import <IOKit/graphics/IOGraphicsLib.h>
+#import <dlfcn.h>
 
 extern CGError CGSConfigureDisplayEnabled(CGDisplayConfigRef config, CGDirectDisplayID display, bool enabled);
 
@@ -8,15 +9,34 @@ enum {
     kMaxDisplays = 16
 };
 
+typedef int (*DisplayServicesGetBrightnessFunction)(CGDirectDisplayID display, float *brightness);
+typedef int (*DisplayServicesSetBrightnessFunction)(CGDirectDisplayID display, float brightness);
+
 @interface AppDelegate : NSObject <NSApplicationDelegate>
 @property(nonatomic, strong) NSStatusItem *statusItem;
 @property(nonatomic, strong) NSWindow *blackoutWindow;
-@property(nonatomic, strong) NSTimer *pointerGuardTimer;
+@property(nonatomic, strong) id globalPointerMonitor;
+@property(nonatomic, strong) id localPointerMonitor;
+@property(nonatomic, assign) CFMachPortRef pointerEventTap;
+@property(nonatomic, assign) CFRunLoopSourceRef pointerEventSource;
 @property(nonatomic, assign) CGDirectDisplayID builtInDisplayID;
 @property(nonatomic, assign) float previousBrightness;
 @property(nonatomic, assign) BOOL hasPreviousBrightness;
 @property(nonatomic, assign) BOOL hardDisabled;
+- (void)enablePointerEventTap;
+- (void)handlePointerMovement;
 @end
+
+static CGEventRef PointerGuardEventCallback(CGEventTapProxy proxy, CGEventType type, CGEventRef event, void *userInfo) {
+    AppDelegate *delegate = (__bridge AppDelegate *)userInfo;
+    if (type == kCGEventTapDisabledByTimeout || type == kCGEventTapDisabledByUserInput) {
+        [delegate enablePointerEventTap];
+        return event;
+    }
+
+    [delegate handlePointerMovement];
+    return event;
+}
 
 @implementation AppDelegate
 
@@ -194,13 +214,41 @@ enum {
 }
 
 - (BOOL)readBrightness:(float *)brightness forDisplay:(CGDirectDisplayID)displayID {
+    void *handle = [self displayServicesHandle];
+    if (handle != NULL) {
+        DisplayServicesGetBrightnessFunction getBrightness = (DisplayServicesGetBrightnessFunction)dlsym(handle, "DisplayServicesGetBrightness");
+        if (getBrightness != NULL && getBrightness(displayID, brightness) == 0) {
+            return YES;
+        }
+    }
+
     io_service_t service = CGDisplayIOServicePort(displayID);
     return IODisplayGetFloatParameter(service, kNilOptions, CFSTR(kIODisplayBrightnessKey), brightness) == kIOReturnSuccess;
 }
 
-- (void)setBrightness:(float)brightness forDisplay:(CGDirectDisplayID)displayID {
+- (BOOL)setBrightness:(float)brightness forDisplay:(CGDirectDisplayID)displayID {
+    void *handle = [self displayServicesHandle];
+    if (handle != NULL) {
+        DisplayServicesSetBrightnessFunction setBrightness = (DisplayServicesSetBrightnessFunction)dlsym(handle, "DisplayServicesSetBrightness");
+        if (setBrightness != NULL && setBrightness(displayID, brightness) == 0) {
+            return YES;
+        }
+    }
+
     io_service_t service = CGDisplayIOServicePort(displayID);
-    IODisplaySetFloatParameter(service, kNilOptions, CFSTR(kIODisplayBrightnessKey), brightness);
+    return IODisplaySetFloatParameter(service, kNilOptions, CFSTR(kIODisplayBrightnessKey), brightness) == kIOReturnSuccess;
+}
+
+- (void *)displayServicesHandle {
+    static void *handle = NULL;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        handle = dlopen("/System/Library/PrivateFrameworks/DisplayServices.framework/DisplayServices", RTLD_LAZY);
+        if (handle == NULL) {
+            handle = dlopen("/System/Library/PrivateFrameworks/DisplayServices.framework/Versions/A/DisplayServices", RTLD_LAZY);
+        }
+    });
+    return handle;
 }
 
 - (void)movePointerToExternalDisplayIfNeededFromDisplay:(CGDirectDisplayID)builtInDisplayID {
@@ -232,19 +280,86 @@ enum {
 
 - (void)startPointerGuard {
     [self stopPointerGuard];
-    self.pointerGuardTimer = [NSTimer scheduledTimerWithTimeInterval:0.05
-                                                              target:self
-                                                            selector:@selector(pointerGuardTick:)
-                                                            userInfo:nil
-                                                             repeats:YES];
+    if (![self startPointerEventTap]) {
+        [self startPointerEventMonitors];
+    }
+    [self movePointerToExternalDisplayIfNeededFromDisplay:self.builtInDisplayID];
 }
 
 - (void)stopPointerGuard {
-    [self.pointerGuardTimer invalidate];
-    self.pointerGuardTimer = nil;
+    if (self.pointerEventTap != NULL) {
+        CFMachPortInvalidate(self.pointerEventTap);
+        CFRelease(self.pointerEventTap);
+        self.pointerEventTap = NULL;
+    }
+
+    if (self.pointerEventSource != NULL) {
+        CFRunLoopRemoveSource(CFRunLoopGetMain(), self.pointerEventSource, kCFRunLoopCommonModes);
+        CFRelease(self.pointerEventSource);
+        self.pointerEventSource = NULL;
+    }
+
+    if (self.globalPointerMonitor != nil) {
+        [NSEvent removeMonitor:self.globalPointerMonitor];
+        self.globalPointerMonitor = nil;
+    }
+
+    if (self.localPointerMonitor != nil) {
+        [NSEvent removeMonitor:self.localPointerMonitor];
+        self.localPointerMonitor = nil;
+    }
 }
 
-- (void)pointerGuardTick:(NSTimer *)timer {
+- (BOOL)startPointerEventTap {
+    CGEventMask mask = CGEventMaskBit(kCGEventMouseMoved) |
+                       CGEventMaskBit(kCGEventLeftMouseDragged) |
+                       CGEventMaskBit(kCGEventRightMouseDragged) |
+                       CGEventMaskBit(kCGEventOtherMouseDragged);
+    self.pointerEventTap = CGEventTapCreate(kCGSessionEventTap,
+                                            kCGHeadInsertEventTap,
+                                            kCGEventTapOptionListenOnly,
+                                            mask,
+                                            PointerGuardEventCallback,
+                                            (__bridge void *)self);
+    if (self.pointerEventTap == NULL) {
+        return NO;
+    }
+
+    self.pointerEventSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, self.pointerEventTap, 0);
+    if (self.pointerEventSource == NULL) {
+        CFMachPortInvalidate(self.pointerEventTap);
+        CFRelease(self.pointerEventTap);
+        self.pointerEventTap = NULL;
+        return NO;
+    }
+
+    CFRunLoopAddSource(CFRunLoopGetMain(), self.pointerEventSource, kCFRunLoopCommonModes);
+    [self enablePointerEventTap];
+    return YES;
+}
+
+- (void)enablePointerEventTap {
+    if (self.pointerEventTap != NULL) {
+        CGEventTapEnable(self.pointerEventTap, true);
+    }
+}
+
+- (void)startPointerEventMonitors {
+    NSEventMask mask = NSEventMaskMouseMoved |
+                       NSEventMaskLeftMouseDragged |
+                       NSEventMaskRightMouseDragged |
+                       NSEventMaskOtherMouseDragged;
+    __weak AppDelegate *weakSelf = self;
+    self.globalPointerMonitor = [NSEvent addGlobalMonitorForEventsMatchingMask:mask handler:^(NSEvent *event) {
+        [weakSelf handlePointerMovement];
+    }];
+    self.localPointerMonitor = [NSEvent addLocalMonitorForEventsMatchingMask:mask handler:^NSEvent *(NSEvent *event) {
+        [weakSelf handlePointerMovement];
+        return event;
+    }];
+}
+
+- (void)handlePointerMovement {
     if (self.builtInDisplayID == kCGNullDirectDisplay || self.blackoutWindow == nil) {
         return;
     }

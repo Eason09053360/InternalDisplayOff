@@ -9,9 +9,9 @@ It is intentionally small: launch the app, and it dims the built-in display, pla
 - Checks that an external display is currently active.
 - Finds the built-in MacBook display.
 - Saves the current built-in display brightness.
-- Sets the built-in display brightness to zero.
+- Sets the built-in display brightness to zero, trying DisplayServices first and falling back to IOKit.
 - Places a black fullscreen window over the built-in display.
-- Keeps the pointer from slipping into the built-in display space.
+- Keeps the pointer from slipping into the built-in display space with an event-driven guard.
 - Keeps a menu bar item available for restoring the display.
 - Restores the cover, pointer guard, and brightness when the app quits normally.
 
@@ -32,6 +32,10 @@ Hard-disable mode has serious caveats:
 
 The app refuses to hide or hard-disable the internal display unless an external display is active.
 
+The pointer guard uses a listen-only `CGEventTap` when macOS allows it, and falls back to `NSEvent` mouse monitors if the event tap cannot be created. This avoids constant timer polling during pointer-heavy work such as games.
+
+Brightness control uses private DisplayServices symbols when available because newer Apple Silicon display paths may reject older IOKit brightness calls. IOKit is still kept as a fallback for older systems and configurations.
+
 ## Why hard-disable is not the default
 
 Earlier versions of this project attempted to call the private display-disable API on launch. That was too risky for a public project because:
@@ -41,13 +45,15 @@ Earlier versions of this project attempted to call the private display-disable A
 - a disabled display may disappear from display discovery APIs, so restoration must rely on a cached ID
 - dynamic stack arrays are unnecessary for display enumeration
 
-The current default is a safer visual-off mode with a pointer guard. It is less "true off" than a display disconnect, but it avoids the most annoying daily issue without taking over the system display stack.
+The current default is a safer visual-off mode with an event-driven pointer guard. It is less "true off" than a display disconnect, but it avoids the most annoying daily issue without taking over the system display stack.
 
 ## Requirements
 
 - macOS 12 or later
 - Apple Command Line Tools or Xcode
 - A MacBook with an external display connected
+
+Depending on macOS privacy settings, the pointer guard may require Accessibility or Input Monitoring permission for the app.
 
 ## Build
 
