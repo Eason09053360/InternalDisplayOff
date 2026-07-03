@@ -80,6 +80,13 @@ open "dist/Internal Display Off.app"
 
 If macOS blocks the first launch because the app is unsigned or locally signed, right-click the app and choose **Open**.
 
+## Menu bar status
+
+- `Display Ready`: the built-in display is not hidden by the app.
+- `Internal Hidden`: the black cover is active and brightness was lowered.
+- `Internal Covered`: the black cover is active, but brightness control was not accepted by macOS.
+- `Internal Disabled`: experimental hard-disable mode is active.
+
 ## Project layout
 
 ```text

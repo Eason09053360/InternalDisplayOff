@@ -63,7 +63,7 @@ static void DisplayConfigurationCallback(CGDirectDisplayID display, CGDisplayCha
 
 - (void)setupStatusItem {
     self.statusItem = [[NSStatusBar systemStatusBar] statusItemWithLength:NSVariableStatusItemLength];
-    self.statusItem.button.title = @"Internal Dimmed";
+    self.statusItem.button.title = @"Display Ready";
 
     NSMenu *menu = [[NSMenu alloc] init];
     [menu addItemWithTitle:@"Dim + Cover Internal Display" action:@selector(dimAndCoverInternalDisplay:) keyEquivalent:@"d"];
@@ -97,12 +97,22 @@ static void DisplayConfigurationCallback(CGDirectDisplayID display, CGDisplayCha
         self.hasPreviousBrightness = YES;
     }
 
-    [self setBrightness:0.0f forDisplay:builtIn];
-    [self showBlackoutWindowOnDisplay:builtIn];
+    BOOL brightnessChanged = [self setBrightness:0.0f forDisplay:builtIn];
+    BOOL coverShown = [self showBlackoutWindowOnDisplay:builtIn];
+    if (!coverShown) {
+        if (brightnessChanged && self.hasPreviousBrightness) {
+            [self setBrightness:self.previousBrightness forDisplay:builtIn];
+        }
+        self.statusItem.button.title = @"Display Ready";
+        [self showAlertWithTitle:@"Could not cover the internal display"
+                         message:@"The app found the built-in display, but macOS did not expose a matching screen for the black cover. The display was not hidden."];
+        return;
+    }
+
     [self movePointerToExternalDisplayIfNeededFromDisplay:builtIn];
     [self startPointerGuard];
 
-    self.statusItem.button.title = @"Internal Dimmed";
+    self.statusItem.button.title = brightnessChanged ? @"Internal Hidden" : @"Internal Covered";
 }
 
 - (IBAction)restoreInternalDisplay:(id)sender {
@@ -209,7 +219,7 @@ static void DisplayConfigurationCallback(CGDirectDisplayID display, CGDisplayCha
     }
 }
 
-- (void)showBlackoutWindowOnDisplay:(CGDirectDisplayID)displayID {
+- (BOOL)showBlackoutWindowOnDisplay:(CGDirectDisplayID)displayID {
     NSScreen *targetScreen = nil;
     for (NSScreen *screen in [NSScreen screens]) {
         NSNumber *screenNumber = screen.deviceDescription[@"NSScreenNumber"];
@@ -220,7 +230,7 @@ static void DisplayConfigurationCallback(CGDirectDisplayID display, CGDisplayCha
     }
 
     if (targetScreen == nil) {
-        return;
+        return NO;
     }
 
     [self.blackoutWindow orderOut:nil];
@@ -237,8 +247,9 @@ static void DisplayConfigurationCallback(CGDirectDisplayID display, CGDisplayCha
                                 NSWindowCollectionBehaviorFullScreenAuxiliary |
                                 NSWindowCollectionBehaviorStationary;
     window.ignoresMouseEvents = YES;
-    [window makeKeyAndOrderFront:nil];
+    [window orderFrontRegardless];
     self.blackoutWindow = window;
+    return YES;
 }
 
 - (BOOL)readBrightness:(float *)brightness forDisplay:(CGDirectDisplayID)displayID {
