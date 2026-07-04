@@ -292,29 +292,14 @@ static void DisplayConfigurationCallback(CGDirectDisplayID display, CGDisplayCha
 
 - (void)movePointerToExternalDisplayIfNeededFromDisplay:(CGDirectDisplayID)builtInDisplayID {
     NSPoint mouseLocation = NSEvent.mouseLocation;
-    NSScreen *currentScreen = nil;
     NSScreen *externalScreen = [self nearestExternalScreenToPoint:mouseLocation excludingDisplay:builtInDisplayID];
 
-    for (NSScreen *screen in [NSScreen screens]) {
-        NSNumber *screenNumber = screen.deviceDescription[@"NSScreenNumber"];
-        if (screenNumber == nil) {
-            continue;
-        }
-
-        if (NSPointInRect(mouseLocation, screen.frame)) {
-            currentScreen = screen;
-        }
-    }
-
-    if (currentScreen == nil || externalScreen == nil) {
+    if (externalScreen == nil || [self pointIsOnExternalScreen:mouseLocation excludingDisplay:builtInDisplayID]) {
         return;
     }
 
-    NSNumber *currentScreenNumber = currentScreen.deviceDescription[@"NSScreenNumber"];
-    if (currentScreenNumber != nil && currentScreenNumber.unsignedIntValue == builtInDisplayID) {
-        CGPoint target = [self safePointOnScreen:externalScreen nearPoint:mouseLocation];
-        CGWarpMouseCursorPosition(target);
-    }
+    CGPoint target = [self safePointOnScreen:externalScreen nearPoint:mouseLocation];
+    CGWarpMouseCursorPosition(target);
 }
 
 - (void)startPointerGuard {
@@ -429,6 +414,21 @@ static void DisplayConfigurationCallback(CGDirectDisplayID display, CGDisplayCha
     }
 
     return nearestScreen;
+}
+
+- (BOOL)pointIsOnExternalScreen:(NSPoint)point excludingDisplay:(CGDirectDisplayID)builtInDisplayID {
+    for (NSScreen *screen in [NSScreen screens]) {
+        NSNumber *screenNumber = screen.deviceDescription[@"NSScreenNumber"];
+        if (screenNumber == nil || screenNumber.unsignedIntValue == builtInDisplayID) {
+            continue;
+        }
+
+        if (NSPointInRect(point, screen.frame)) {
+            return YES;
+        }
+    }
+
+    return NO;
 }
 
 - (CGPoint)safePointOnScreen:(NSScreen *)screen nearPoint:(NSPoint)point {
