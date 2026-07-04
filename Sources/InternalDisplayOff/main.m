@@ -23,9 +23,11 @@ typedef int (*DisplayServicesSetBrightnessFunction)(CGDirectDisplayID display, f
 @property(nonatomic, assign) float previousBrightness;
 @property(nonatomic, assign) BOOL hasPreviousBrightness;
 @property(nonatomic, assign) BOOL hardDisabled;
+@property(nonatomic, assign) BOOL pointerPermissionAlertShown;
 - (void)enablePointerEventTap;
 - (void)handleDisplayConfigurationChanged;
 - (void)handlePointerMovement;
+- (BOOL)clampPointerEvent:(CGEventRef)event;
 @end
 
 static CGEventRef PointerGuardEventCallback(CGEventTapProxy proxy, CGEventType type, CGEventRef event, void *userInfo) {
@@ -35,7 +37,7 @@ static CGEventRef PointerGuardEventCallback(CGEventTapProxy proxy, CGEventType t
         return event;
     }
 
-    [delegate handlePointerMovement];
+    [delegate clampPointerEvent:event];
     return event;
 }
 
@@ -110,9 +112,13 @@ static void DisplayConfigurationCallback(CGDirectDisplayID display, CGDisplayCha
     }
 
     [self movePointerToExternalDisplayIfNeededFromDisplay:builtIn];
-    [self startPointerGuard];
+    BOOL pointerGuardReady = [self startPointerGuard];
 
-    self.statusItem.button.title = brightnessChanged ? @"Internal Hidden" : @"Internal Covered";
+    if (!pointerGuardReady) {
+        self.statusItem.button.title = @"Needs Pointer Permission";
+    } else {
+        self.statusItem.button.title = brightnessChanged ? @"Internal Hidden" : @"Internal Covered";
+    }
 }
 
 - (IBAction)restoreInternalDisplay:(id)sender {
@@ -291,23 +297,36 @@ static void DisplayConfigurationCallback(CGDirectDisplayID display, CGDisplayCha
 }
 
 - (void)movePointerToExternalDisplayIfNeededFromDisplay:(CGDirectDisplayID)builtInDisplayID {
-    NSPoint mouseLocation = NSEvent.mouseLocation;
-    NSScreen *externalScreen = [self nearestExternalScreenToPoint:mouseLocation excludingDisplay:builtInDisplayID];
-
-    if (externalScreen == nil || [self pointIsOnExternalScreen:mouseLocation excludingDisplay:builtInDisplayID]) {
+    CGEventRef currentEvent = CGEventCreate(NULL);
+    if (currentEvent == NULL) {
         return;
     }
 
-    CGPoint target = [self safePointOnScreen:externalScreen nearPoint:mouseLocation];
+    CGPoint mouseLocation = CGEventGetLocation(currentEvent);
+    CFRelease(currentEvent);
+    CGRect externalBounds = [self nearestExternalDisplayBoundsToPoint:mouseLocation excludingDisplay:builtInDisplayID];
+
+    if (CGRectIsNull(externalBounds) || [self pointIsOnExternalDisplay:mouseLocation excludingDisplay:builtInDisplayID]) {
+        return;
+    }
+
+    CGPoint target = [self safePointInDisplayBounds:externalBounds nearPoint:mouseLocation];
     CGWarpMouseCursorPosition(target);
 }
 
-- (void)startPointerGuard {
+- (BOOL)startPointerGuard {
     [self stopPointerGuard];
     if (![self startPointerEventTap]) {
         [self startPointerEventMonitors];
+        if (!self.pointerPermissionAlertShown) {
+            self.pointerPermissionAlertShown = YES;
+            [self showAlertWithTitle:@"Pointer guard needs permission"
+                             message:@"macOS did not allow the app to create a pointer event tap. Give this app Accessibility or Input Monitoring permission, then quit and reopen it."];
+        }
+        return NO;
     }
     [self movePointerToExternalDisplayIfNeededFromDisplay:self.builtInDisplayID];
+    return YES;
 }
 
 - (void)stopPointerGuard {
@@ -341,7 +360,7 @@ static void DisplayConfigurationCallback(CGDirectDisplayID display, CGDisplayCha
                        CGEventMaskBit(kCGEventOtherMouseDragged);
     self.pointerEventTap = CGEventTapCreate(kCGSessionEventTap,
                                             kCGHeadInsertEventTap,
-                                            kCGEventTapOptionListenOnly,
+                                            kCGEventTapOptionDefault,
                                             mask,
                                             PointerGuardEventCallback,
                                             (__bridge void *)self);
@@ -391,39 +410,75 @@ static void DisplayConfigurationCallback(CGDirectDisplayID display, CGDisplayCha
     [self movePointerToExternalDisplayIfNeededFromDisplay:self.builtInDisplayID];
 }
 
-- (NSScreen *)nearestExternalScreenToPoint:(NSPoint)point excludingDisplay:(CGDirectDisplayID)builtInDisplayID {
-    NSScreen *nearestScreen = nil;
-    CGFloat nearestDistance = CGFLOAT_MAX;
+- (BOOL)clampPointerEvent:(CGEventRef)event {
+    if (self.builtInDisplayID == kCGNullDirectDisplay || self.blackoutWindow == nil) {
+        return NO;
+    }
 
-    for (NSScreen *screen in [NSScreen screens]) {
-        NSNumber *screenNumber = screen.deviceDescription[@"NSScreenNumber"];
-        if (screenNumber == nil || screenNumber.unsignedIntValue == builtInDisplayID) {
+    CGPoint location = CGEventGetLocation(event);
+    if ([self pointIsOnExternalDisplay:location excludingDisplay:self.builtInDisplayID]) {
+        return NO;
+    }
+
+    CGRect bounds = [self nearestExternalDisplayBoundsToPoint:location excludingDisplay:self.builtInDisplayID];
+    if (CGRectIsNull(bounds)) {
+        return NO;
+    }
+
+    CGPoint clampedLocation = [self safePointInDisplayBounds:bounds nearPoint:location];
+    CGEventSetLocation(event, clampedLocation);
+    return YES;
+}
+
+- (CGRect)nearestExternalDisplayBoundsToPoint:(CGPoint)point excludingDisplay:(CGDirectDisplayID)builtInDisplayID {
+    CGRect nearestBounds = CGRectNull;
+    CGFloat nearestDistance = CGFLOAT_MAX;
+    CGDisplayCount count = 0;
+    CGDirectDisplayID displays[kMaxDisplays] = {0};
+
+    CGError error = CGGetActiveDisplayList(kMaxDisplays, displays, &count);
+    if (error != kCGErrorSuccess) {
+        return CGRectNull;
+    }
+
+    for (CGDisplayCount index = 0; index < count; index++) {
+        CGDirectDisplayID displayID = displays[index];
+        if (displayID == builtInDisplayID || CGDisplayIsBuiltin(displayID)) {
             continue;
         }
 
-        NSPoint clampedPoint = NSMakePoint(MIN(MAX(point.x, NSMinX(screen.frame)), NSMaxX(screen.frame)),
-                                           MIN(MAX(point.y, NSMinY(screen.frame)), NSMaxY(screen.frame)));
+        CGRect bounds = CGDisplayBounds(displayID);
+        CGPoint clampedPoint = CGPointMake(MIN(MAX(point.x, CGRectGetMinX(bounds)), CGRectGetMaxX(bounds)),
+                                           MIN(MAX(point.y, CGRectGetMinY(bounds)), CGRectGetMaxY(bounds)));
         CGFloat dx = point.x - clampedPoint.x;
         CGFloat dy = point.y - clampedPoint.y;
         CGFloat distance = dx * dx + dy * dy;
 
         if (distance < nearestDistance) {
             nearestDistance = distance;
-            nearestScreen = screen;
+            nearestBounds = bounds;
         }
     }
 
-    return nearestScreen;
+    return nearestBounds;
 }
 
-- (BOOL)pointIsOnExternalScreen:(NSPoint)point excludingDisplay:(CGDirectDisplayID)builtInDisplayID {
-    for (NSScreen *screen in [NSScreen screens]) {
-        NSNumber *screenNumber = screen.deviceDescription[@"NSScreenNumber"];
-        if (screenNumber == nil || screenNumber.unsignedIntValue == builtInDisplayID) {
+- (BOOL)pointIsOnExternalDisplay:(CGPoint)point excludingDisplay:(CGDirectDisplayID)builtInDisplayID {
+    CGDisplayCount count = 0;
+    CGDirectDisplayID displays[kMaxDisplays] = {0};
+
+    CGError error = CGGetActiveDisplayList(kMaxDisplays, displays, &count);
+    if (error != kCGErrorSuccess) {
+        return NO;
+    }
+
+    for (CGDisplayCount index = 0; index < count; index++) {
+        CGDirectDisplayID displayID = displays[index];
+        if (displayID == builtInDisplayID || CGDisplayIsBuiltin(displayID)) {
             continue;
         }
 
-        if (NSPointInRect(point, screen.frame)) {
+        if (CGRectContainsPoint(CGDisplayBounds(displayID), point)) {
             return YES;
         }
     }
@@ -431,11 +486,11 @@ static void DisplayConfigurationCallback(CGDirectDisplayID display, CGDisplayCha
     return NO;
 }
 
-- (CGPoint)safePointOnScreen:(NSScreen *)screen nearPoint:(NSPoint)point {
+- (CGPoint)safePointInDisplayBounds:(CGRect)bounds nearPoint:(CGPoint)point {
     CGFloat inset = 8.0;
-    NSRect frame = NSInsetRect(screen.frame, inset, inset);
-    CGFloat x = MIN(MAX(point.x, NSMinX(frame)), NSMaxX(frame));
-    CGFloat y = MIN(MAX(point.y, NSMinY(frame)), NSMaxY(frame));
+    CGRect frame = CGRectInset(bounds, inset, inset);
+    CGFloat x = MIN(MAX(point.x, CGRectGetMinX(frame)), CGRectGetMaxX(frame));
+    CGFloat y = MIN(MAX(point.y, CGRectGetMinY(frame)), CGRectGetMaxY(frame));
     return CGPointMake(x, y);
 }
 

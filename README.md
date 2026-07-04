@@ -85,6 +85,7 @@ If macOS blocks the first launch because the app is unsigned or locally signed, 
 - `Display Ready`: the built-in display is not hidden by the app.
 - `Internal Hidden`: the black cover is active and brightness was lowered.
 - `Internal Covered`: the black cover is active, but brightness control was not accepted by macOS.
+- `Needs Pointer Permission`: the display cover is active, but macOS did not allow the pointer event tap. Grant Accessibility or Input Monitoring permission, then quit and reopen the app.
 - `Internal Disabled`: experimental hard-disable mode is active.
 
 ## Project layout
