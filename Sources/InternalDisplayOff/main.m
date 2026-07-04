@@ -358,7 +358,7 @@ static void DisplayConfigurationCallback(CGDirectDisplayID display, CGDisplayCha
                        CGEventMaskBit(kCGEventLeftMouseDragged) |
                        CGEventMaskBit(kCGEventRightMouseDragged) |
                        CGEventMaskBit(kCGEventOtherMouseDragged);
-    self.pointerEventTap = CGEventTapCreate(kCGSessionEventTap,
+    self.pointerEventTap = CGEventTapCreate(kCGHIDEventTap,
                                             kCGHeadInsertEventTap,
                                             kCGEventTapOptionDefault,
                                             mask,
@@ -427,6 +427,7 @@ static void DisplayConfigurationCallback(CGDirectDisplayID display, CGDisplayCha
 
     CGPoint clampedLocation = [self safePointInDisplayBounds:bounds nearPoint:location];
     CGEventSetLocation(event, clampedLocation);
+    CGWarpMouseCursorPosition(clampedLocation);
     return YES;
 }
 
@@ -487,7 +488,7 @@ static void DisplayConfigurationCallback(CGDirectDisplayID display, CGDisplayCha
 }
 
 - (CGPoint)safePointInDisplayBounds:(CGRect)bounds nearPoint:(CGPoint)point {
-    CGFloat inset = 8.0;
+    CGFloat inset = 1.0;
     CGRect frame = CGRectInset(bounds, inset, inset);
     CGFloat x = MIN(MAX(point.x, CGRectGetMinX(frame)), CGRectGetMaxX(frame));
     CGFloat y = MIN(MAX(point.y, CGRectGetMinY(frame)), CGRectGetMaxY(frame));

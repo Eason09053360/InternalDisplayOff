@@ -35,7 +35,7 @@ The app refuses to hide or hard-disable the internal display unless an external 
 
 If the external display is unplugged while the built-in display is hidden, the app listens for the macOS display reconfiguration event and restores the built-in display automatically.
 
-The pointer guard uses a listen-only `CGEventTap` when macOS allows it, and falls back to `NSEvent` mouse monitors if the event tap cannot be created. This avoids constant timer polling during pointer-heavy work such as games.
+The pointer guard uses a `CGEventTap` at the HID event layer when macOS allows it, and falls back to `NSEvent` mouse monitors if the event tap cannot be created. The HID event tap can clamp pointer events before they leave the external display; the fallback is less reliable and mainly exists as a best-effort safety net.
 
 Brightness control uses private DisplayServices symbols when available because newer Apple Silicon display paths may reject older IOKit brightness calls. IOKit is still kept as a fallback for older systems and configurations.
 
@@ -56,7 +56,7 @@ The current default is a safer visual-off mode with an event-driven pointer guar
 - Apple Command Line Tools or Xcode
 - A MacBook with an external display connected
 
-Depending on macOS privacy settings, the pointer guard may require Accessibility or Input Monitoring permission for the app.
+Depending on macOS privacy settings, the pointer guard may require Accessibility or Input Monitoring permission for the app. If the menu bar status says `Needs Pointer Permission`, grant the permission and quit/reopen the app.
 
 ## Build
 
