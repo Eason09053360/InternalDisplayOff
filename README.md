@@ -13,6 +13,7 @@ It is intentionally small: launch the app, and it dims the built-in display, pla
 - Places a black fullscreen window over the built-in display.
 - Keeps the pointer from slipping into the built-in display space with an event-driven guard.
 - Automatically restores the built-in display if the external display disconnects.
+- Reapplies the cover and dimming shortly after the Mac wakes from sleep.
 - Keeps a menu bar item available for restoring the display.
 - Restores the cover, pointer guard, and brightness when the app quits normally.
 
@@ -34,6 +35,8 @@ Hard-disable mode has serious caveats:
 The app refuses to hide or hard-disable the internal display unless an external display is active.
 
 If the external display is unplugged while the built-in display is hidden, the app listens for the macOS display reconfiguration event and restores the built-in display automatically.
+
+If the Mac wakes from sleep while the built-in display is hidden, the app waits briefly for display hardware to settle, then reapplies the dimming, cover, and pointer guard.
 
 The pointer guard uses a `CGEventTap` at the HID event layer when macOS allows it, and falls back to `NSEvent` mouse monitors if the event tap cannot be created. The HID event tap can clamp pointer events before they leave the external display; the fallback is less reliable and mainly exists as a best-effort safety net.
 

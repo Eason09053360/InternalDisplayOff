@@ -24,9 +24,11 @@ typedef int (*DisplayServicesSetBrightnessFunction)(CGDirectDisplayID display, f
 @property(nonatomic, assign) BOOL hasPreviousBrightness;
 @property(nonatomic, assign) BOOL hardDisabled;
 @property(nonatomic, assign) BOOL pointerPermissionAlertShown;
+@property(nonatomic, assign) BOOL wakeReapplyScheduled;
 - (void)enablePointerEventTap;
 - (void)handleDisplayConfigurationChanged;
 - (void)handlePointerMovement;
+- (void)handleSystemWake:(NSNotification *)notification;
 - (BOOL)clampPointerEvent:(CGEventRef)event;
 @end
 
@@ -54,6 +56,15 @@ static void DisplayConfigurationCallback(CGDirectDisplayID display, CGDisplayCha
     [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
     self.builtInDisplayID = kCGNullDirectDisplay;
     CGDisplayRegisterReconfigurationCallback(DisplayConfigurationCallback, (__bridge void *)self);
+    NSNotificationCenter *workspaceCenter = [[NSWorkspace sharedWorkspace] notificationCenter];
+    [workspaceCenter addObserver:self
+                         selector:@selector(handleSystemWake:)
+                             name:NSWorkspaceDidWakeNotification
+                           object:nil];
+    [workspaceCenter addObserver:self
+                         selector:@selector(handleSystemWake:)
+                             name:NSWorkspaceScreensDidWakeNotification
+                           object:nil];
     [self setupStatusItem];
     [self dimAndCoverInternalDisplay:nil];
 }
@@ -61,6 +72,7 @@ static void DisplayConfigurationCallback(CGDirectDisplayID display, CGDisplayCha
 - (void)applicationWillTerminate:(NSNotification *)notification {
     [self restoreInternalDisplay:nil];
     CGDisplayRemoveReconfigurationCallback(DisplayConfigurationCallback, (__bridge void *)self);
+    [[[NSWorkspace sharedWorkspace] notificationCenter] removeObserver:self];
 }
 
 - (void)setupStatusItem {
@@ -93,10 +105,12 @@ static void DisplayConfigurationCallback(CGDirectDisplayID display, CGDisplayCha
 
     self.builtInDisplayID = builtIn;
 
-    float brightness = 1.0f;
-    if ([self readBrightness:&brightness forDisplay:builtIn]) {
-        self.previousBrightness = brightness;
-        self.hasPreviousBrightness = YES;
+    if (self.blackoutWindow == nil && !self.hasPreviousBrightness) {
+        float brightness = 1.0f;
+        if ([self readBrightness:&brightness forDisplay:builtIn]) {
+            self.previousBrightness = brightness;
+            self.hasPreviousBrightness = YES;
+        }
     }
 
     BOOL brightnessChanged = [self setBrightness:0.0f forDisplay:builtIn];
@@ -135,6 +149,7 @@ static void DisplayConfigurationCallback(CGDirectDisplayID display, CGDisplayCha
         [self setBrightness:MAX(self.previousBrightness, 0.25f) forDisplay:self.builtInDisplayID];
     }
 
+    self.hasPreviousBrightness = NO;
     self.statusItem.button.title = @"Display Ready";
 }
 
@@ -223,6 +238,28 @@ static void DisplayConfigurationCallback(CGDirectDisplayID display, CGDisplayCha
         [self showBlackoutWindowOnDisplay:self.builtInDisplayID];
         [self movePointerToExternalDisplayIfNeededFromDisplay:self.builtInDisplayID];
     }
+}
+
+- (void)handleSystemWake:(NSNotification *)notification {
+    if (self.blackoutWindow == nil || self.hardDisabled || self.wakeReapplyScheduled) {
+        return;
+    }
+
+    self.wakeReapplyScheduled = YES;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        self.wakeReapplyScheduled = NO;
+        if (self.blackoutWindow == nil || self.hardDisabled) {
+            return;
+        }
+
+        if (![self hasActiveExternalDisplay]) {
+            [self restoreInternalDisplay:nil];
+            self.statusItem.button.title = @"Display Restored";
+            return;
+        }
+
+        [self dimAndCoverInternalDisplay:nil];
+    });
 }
 
 - (BOOL)showBlackoutWindowOnDisplay:(CGDirectDisplayID)displayID {
