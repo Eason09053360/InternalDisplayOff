@@ -25,6 +25,8 @@ typedef int (*DisplayServicesSetBrightnessFunction)(CGDirectDisplayID display, f
 @property(nonatomic, assign) BOOL hardDisabled;
 @property(nonatomic, assign) BOOL pointerPermissionAlertShown;
 @property(nonatomic, assign) BOOL wakeReapplyScheduled;
+@property(nonatomic, assign) BOOL wantsInternalDisplayHidden;
+@property(nonatomic, assign) NSInteger wakeReapplyAttempts;
 - (void)enablePointerEventTap;
 - (void)handleDisplayConfigurationChanged;
 - (void)handlePointerMovement;
@@ -125,6 +127,7 @@ static void DisplayConfigurationCallback(CGDirectDisplayID display, CGDisplayCha
         return;
     }
 
+    self.wantsInternalDisplayHidden = YES;
     [self movePointerToExternalDisplayIfNeededFromDisplay:builtIn];
     BOOL pointerGuardReady = [self startPointerGuard];
 
@@ -136,6 +139,10 @@ static void DisplayConfigurationCallback(CGDirectDisplayID display, CGDisplayCha
 }
 
 - (IBAction)restoreInternalDisplay:(id)sender {
+    self.wantsInternalDisplayHidden = NO;
+    self.wakeReapplyScheduled = NO;
+    self.wakeReapplyAttempts = 0;
+
     if (self.hardDisabled && self.builtInDisplayID != kCGNullDirectDisplay) {
         [self setDisplay:self.builtInDisplayID enabled:true];
         self.hardDisabled = NO;
@@ -229,8 +236,10 @@ static void DisplayConfigurationCallback(CGDirectDisplayID display, CGDisplayCha
     }
 
     if (![self hasActiveExternalDisplay]) {
-        [self restoreInternalDisplay:nil];
-        self.statusItem.button.title = @"Display Restored";
+        if (!self.wakeReapplyScheduled) {
+            [self restoreInternalDisplay:nil];
+            self.statusItem.button.title = @"Display Restored";
+        }
         return;
     }
 
@@ -241,25 +250,46 @@ static void DisplayConfigurationCallback(CGDirectDisplayID display, CGDisplayCha
 }
 
 - (void)handleSystemWake:(NSNotification *)notification {
-    if (self.blackoutWindow == nil || self.hardDisabled || self.wakeReapplyScheduled) {
+    if (!self.wantsInternalDisplayHidden || self.hardDisabled || self.wakeReapplyScheduled) {
         return;
     }
 
     self.wakeReapplyScheduled = YES;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        self.wakeReapplyScheduled = NO;
-        if (self.blackoutWindow == nil || self.hardDisabled) {
-            return;
-        }
+    self.wakeReapplyAttempts = 0;
+    [self scheduleWakeReapplyAfterDelay:1.5];
+}
 
-        if (![self hasActiveExternalDisplay]) {
-            [self restoreInternalDisplay:nil];
-            self.statusItem.button.title = @"Display Restored";
-            return;
-        }
-
-        [self dimAndCoverInternalDisplay:nil];
+- (void)scheduleWakeReapplyAfterDelay:(NSTimeInterval)delay {
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        [self attemptWakeReapply];
     });
+}
+
+- (void)attemptWakeReapply {
+    if (!self.wantsInternalDisplayHidden || self.hardDisabled) {
+        self.wakeReapplyScheduled = NO;
+        self.wakeReapplyAttempts = 0;
+        return;
+    }
+
+    self.wakeReapplyAttempts += 1;
+
+    if ([self hasActiveExternalDisplay]) {
+        self.wakeReapplyScheduled = NO;
+        self.wakeReapplyAttempts = 0;
+        [self dimAndCoverInternalDisplay:nil];
+        return;
+    }
+
+    if (self.wakeReapplyAttempts < 6) {
+        [self scheduleWakeReapplyAfterDelay:1.0];
+        return;
+    }
+
+    self.wakeReapplyScheduled = NO;
+    self.wakeReapplyAttempts = 0;
+    [self restoreInternalDisplay:nil];
+    self.statusItem.button.title = @"Display Restored";
 }
 
 - (BOOL)showBlackoutWindowOnDisplay:(CGDirectDisplayID)displayID {
