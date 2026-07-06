@@ -16,6 +16,7 @@ clang "$ROOT/Sources/InternalDisplayOff/main.m" \
   -framework IOKit
 
 cp "$ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
+cp "$ROOT/Resources/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 chmod +x "$EXECUTABLE"
 
 codesign --force --deep --sign - "$APP"

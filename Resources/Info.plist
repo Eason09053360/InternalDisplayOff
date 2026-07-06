@@ -6,6 +6,8 @@
     <string>en</string>
     <key>CFBundleExecutable</key>
     <string>InternalDisplayOff</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>CFBundleIdentifier</key>
     <string>local.codex.InternalDisplayOff</string>
     <key>CFBundleInfoDictionaryVersion</key>

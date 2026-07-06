@@ -21,18 +21,9 @@ It is intentionally small: launch the app, and it dims the built-in display, pla
 
 The default mode does not remove the built-in display from the macOS display layout. That is deliberate: it avoids the crash and recovery risks associated with private display-disable APIs, especially on Apple Silicon.
 
-The app includes an **Experimental Hard Disable** menu action that calls `CGSConfigureDisplayEnabled`, a private macOS display configuration function. This is off the default path and requires a confirmation prompt.
+The app refuses to hide the internal display unless an external display is active.
 
-Hard-disable mode has serious caveats:
-
-- behavior may vary by macOS version and Mac model
-- Apple Silicon support is not guaranteed
-- a crash or force quit can prevent automatic restoration
-- the app must keep the original display ID cached to restore reliably
-- the app is not suitable for Mac App Store distribution
-- if anything behaves oddly, rebooting should restore macOS' normal display state
-
-The app refuses to hide or hard-disable the internal display unless an external display is active.
+This project intentionally does not ship a hardware display-disconnect mode. Earlier experimental builds included one, but it was removed because it relied on private APIs that can fail or leave users in a hard-to-recover display state.
 
 If the external display is unplugged while the built-in display is hidden, the app listens for the macOS display reconfiguration event and restores the built-in display automatically.
 
@@ -44,14 +35,14 @@ Brightness control uses private DisplayServices symbols when available because n
 
 ## Why hard-disable is not the default
 
-Earlier versions of this project attempted to call the private display-disable API on launch. That was too risky for a public project because:
+Earlier versions of this project experimented with private display-disable APIs. That was too risky for a public project because:
 
 - private display APIs can fail or behave differently across Mac models
 - `applicationWillTerminate:` is not called after crashes or force quits
 - a disabled display may disappear from display discovery APIs, so restoration must rely on a cached ID
 - dynamic stack arrays are unnecessary for display enumeration
 
-The current default is a safer visual-off mode with an event-driven pointer guard. It is less "true off" than a display disconnect, but it avoids the most annoying daily issue without taking over the system display stack.
+The current app is a safer visual-off tool with an event-driven pointer guard. It is less "true off" than a display disconnect, but it avoids the most annoying daily issue without taking over the system display stack.
 
 ## Requirements
 
@@ -73,6 +64,8 @@ The built app will be written to:
 dist/Internal Display Off.app
 ```
 
+This repository currently ships source code, not a notarized binary release. To use it, clone the repository and run `./build.sh`.
+
 ## Run
 
 Open the app from Finder, or run:
@@ -89,13 +82,14 @@ If macOS blocks the first launch because the app is unsigned or locally signed, 
 - `Internal Hidden`: the black cover is active and brightness was lowered.
 - `Internal Covered`: the black cover is active, but brightness control was not accepted by macOS.
 - `Needs Pointer Permission`: the display cover is active, but macOS did not allow the pointer event tap. Grant Accessibility or Input Monitoring permission, then quit and reopen the app.
-- `Internal Disabled`: experimental hard-disable mode is active.
 
 ## Project layout
 
 ```text
 Sources/InternalDisplayOff/main.m  App source
 Resources/Info.plist              macOS app bundle metadata
+Resources/AppIcon.icns            App icon
+Resources/AppIconSource.png       Source image for the app icon
 build.sh                          Build and ad-hoc sign script
 ```
 

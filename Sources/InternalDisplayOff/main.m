@@ -3,8 +3,6 @@
 #import <IOKit/graphics/IOGraphicsLib.h>
 #import <dlfcn.h>
 
-extern CGError CGSConfigureDisplayEnabled(CGDisplayConfigRef config, CGDirectDisplayID display, bool enabled);
-
 enum {
     kMaxDisplays = 16
 };
@@ -22,7 +20,6 @@ typedef int (*DisplayServicesSetBrightnessFunction)(CGDirectDisplayID display, f
 @property(nonatomic, assign) CGDirectDisplayID builtInDisplayID;
 @property(nonatomic, assign) float previousBrightness;
 @property(nonatomic, assign) BOOL hasPreviousBrightness;
-@property(nonatomic, assign) BOOL hardDisabled;
 @property(nonatomic, assign) BOOL pointerPermissionAlertShown;
 @property(nonatomic, assign) BOOL wakeReapplyScheduled;
 @property(nonatomic, assign) BOOL wantsInternalDisplayHidden;
@@ -85,8 +82,6 @@ static void DisplayConfigurationCallback(CGDirectDisplayID display, CGDisplayCha
     [menu addItemWithTitle:@"Dim + Cover Internal Display" action:@selector(dimAndCoverInternalDisplay:) keyEquivalent:@"d"];
     [menu addItemWithTitle:@"Restore Internal Display" action:@selector(restoreInternalDisplay:) keyEquivalent:@"r"];
     [menu addItem:[NSMenuItem separatorItem]];
-    [menu addItemWithTitle:@"Experimental Hard Disable..." action:@selector(experimentalHardDisable:) keyEquivalent:@"e"];
-    [menu addItem:[NSMenuItem separatorItem]];
     [menu addItemWithTitle:@"Quit" action:@selector(quit:) keyEquivalent:@"q"];
     self.statusItem.menu = menu;
 }
@@ -143,11 +138,6 @@ static void DisplayConfigurationCallback(CGDirectDisplayID display, CGDisplayCha
     self.wakeReapplyScheduled = NO;
     self.wakeReapplyAttempts = 0;
 
-    if (self.hardDisabled && self.builtInDisplayID != kCGNullDirectDisplay) {
-        [self setDisplay:self.builtInDisplayID enabled:true];
-        self.hardDisabled = NO;
-    }
-
     [self.blackoutWindow orderOut:nil];
     self.blackoutWindow = nil;
     [self stopPointerGuard];
@@ -158,35 +148,6 @@ static void DisplayConfigurationCallback(CGDirectDisplayID display, CGDisplayCha
 
     self.hasPreviousBrightness = NO;
     self.statusItem.button.title = @"Display Ready";
-}
-
-- (IBAction)experimentalHardDisable:(id)sender {
-    CGDirectDisplayID builtIn = [self builtInDisplayIDFromActiveDisplays];
-    if (builtIn == kCGNullDirectDisplay || ![self hasActiveExternalDisplay]) {
-        [self showAlertWithTitle:@"External display required"
-                         message:@"Hard disable is only available while an external display is active."];
-        return;
-    }
-
-    NSAlert *alert = [[NSAlert alloc] init];
-    alert.messageText = @"Experimental hard disable";
-    alert.informativeText = @"This uses a private macOS API. It can fail on Apple Silicon and may require a reboot if the app is killed before restore. Use the safer dim + cover mode unless you are testing.";
-    [alert addButtonWithTitle:@"Cancel"];
-    [alert addButtonWithTitle:@"Hard Disable"];
-    alert.alertStyle = NSAlertStyleCritical;
-
-    if ([alert runModal] != NSAlertSecondButtonReturn) {
-        return;
-    }
-
-    self.builtInDisplayID = builtIn;
-    if ([self setDisplay:builtIn enabled:false]) {
-        self.hardDisabled = YES;
-        self.statusItem.button.title = @"Internal Disabled";
-    } else {
-        [self showAlertWithTitle:@"Could not hard disable the internal display"
-                         message:@"macOS rejected the private display configuration call on this machine or OS version."];
-    }
 }
 
 - (IBAction)quit:(id)sender {
@@ -230,7 +191,7 @@ static void DisplayConfigurationCallback(CGDirectDisplayID display, CGDisplayCha
 }
 
 - (void)handleDisplayConfigurationChanged {
-    BOOL displayIsHidden = self.blackoutWindow != nil || self.hardDisabled;
+    BOOL displayIsHidden = self.blackoutWindow != nil;
     if (!displayIsHidden) {
         return;
     }
@@ -250,7 +211,7 @@ static void DisplayConfigurationCallback(CGDirectDisplayID display, CGDisplayCha
 }
 
 - (void)handleSystemWake:(NSNotification *)notification {
-    if (!self.wantsInternalDisplayHidden || self.hardDisabled || self.wakeReapplyScheduled) {
+    if (!self.wantsInternalDisplayHidden || self.wakeReapplyScheduled) {
         return;
     }
 
@@ -266,7 +227,7 @@ static void DisplayConfigurationCallback(CGDirectDisplayID display, CGDisplayCha
 }
 
 - (void)attemptWakeReapply {
-    if (!self.wantsInternalDisplayHidden || self.hardDisabled) {
+    if (!self.wantsInternalDisplayHidden) {
         self.wakeReapplyScheduled = NO;
         self.wakeReapplyAttempts = 0;
         return;
@@ -560,23 +521,6 @@ static void DisplayConfigurationCallback(CGDirectDisplayID display, CGDisplayCha
     CGFloat x = MIN(MAX(point.x, CGRectGetMinX(frame)), CGRectGetMaxX(frame));
     CGFloat y = MIN(MAX(point.y, CGRectGetMinY(frame)), CGRectGetMaxY(frame));
     return CGPointMake(x, y);
-}
-
-- (BOOL)setDisplay:(CGDirectDisplayID)displayID enabled:(bool)enabled {
-    CGDisplayConfigRef config = NULL;
-    CGError beginError = CGBeginDisplayConfiguration(&config);
-    if (beginError != kCGErrorSuccess || config == NULL) {
-        return NO;
-    }
-
-    CGError configureError = CGSConfigureDisplayEnabled(config, displayID, enabled);
-    if (configureError != kCGErrorSuccess) {
-        CGCancelDisplayConfiguration(config);
-        return NO;
-    }
-
-    CGError completeError = CGCompleteDisplayConfiguration(config, kCGConfigurePermanently);
-    return completeError == kCGErrorSuccess;
 }
 
 - (void)showAlertWithTitle:(NSString *)title message:(NSString *)message {
