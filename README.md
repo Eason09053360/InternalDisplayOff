@@ -22,7 +22,11 @@ It refuses to hide the internal display unless an external display is active, so
 
 ## Build and run
 
+**Connect your external display first.** The app hides the built-in display as soon as it launches, and refuses to do anything if no external display is attached.
+
 ```sh
+git clone https://github.com/Eason09053360/InternalDisplayOff.git
+cd InternalDisplayOff
 ./build.sh
 open "dist/Internal Display Off.app"
 ```
