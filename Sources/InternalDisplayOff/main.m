@@ -1,4 +1,5 @@
 #import <Cocoa/Cocoa.h>
+#import <ApplicationServices/ApplicationServices.h>
 #import <CoreGraphics/CoreGraphics.h>
 #import <IOKit/graphics/IOGraphicsLib.h>
 #import <dlfcn.h>
@@ -12,6 +13,7 @@ typedef int (*DisplayServicesSetBrightnessFunction)(CGDirectDisplayID display, f
 
 @interface AppDelegate : NSObject <NSApplicationDelegate>
 @property(nonatomic, strong) NSStatusItem *statusItem;
+@property(nonatomic, strong) NSMutableDictionary<NSNumber *, NSValue *> *savedDisplayOrigins;
 @property(nonatomic, strong) NSWindow *blackoutWindow;
 @property(nonatomic, strong) id globalPointerMonitor;
 @property(nonatomic, strong) id localPointerMonitor;
@@ -20,7 +22,10 @@ typedef int (*DisplayServicesSetBrightnessFunction)(CGDirectDisplayID display, f
 @property(nonatomic, assign) CGDirectDisplayID builtInDisplayID;
 @property(nonatomic, assign) float previousBrightness;
 @property(nonatomic, assign) BOOL hasPreviousBrightness;
+@property(nonatomic, assign) BOOL hasSavedDisplayArrangement;
 @property(nonatomic, assign) BOOL pointerPermissionAlertShown;
+@property(nonatomic, assign) BOOL pointerGuardActive;
+@property(nonatomic, assign) BOOL pointerGuardRetryScheduled;
 @property(nonatomic, assign) BOOL wakeReapplyScheduled;
 @property(nonatomic, assign) BOOL wantsInternalDisplayHidden;
 @property(nonatomic, assign) NSInteger wakeReapplyAttempts;
@@ -82,6 +87,8 @@ static void DisplayConfigurationCallback(CGDirectDisplayID display, CGDisplayCha
     [menu addItemWithTitle:@"Dim + Cover Internal Display" action:@selector(dimAndCoverInternalDisplay:) keyEquivalent:@"d"];
     [menu addItemWithTitle:@"Restore Internal Display" action:@selector(restoreInternalDisplay:) keyEquivalent:@"r"];
     [menu addItem:[NSMenuItem separatorItem]];
+    [menu addItemWithTitle:@"Open Accessibility Settings" action:@selector(openAccessibilitySettings:) keyEquivalent:@""];
+    [menu addItem:[NSMenuItem separatorItem]];
     [menu addItemWithTitle:@"Quit" action:@selector(quit:) keyEquivalent:@"q"];
     self.statusItem.menu = menu;
 }
@@ -101,6 +108,7 @@ static void DisplayConfigurationCallback(CGDirectDisplayID display, CGDisplayCha
     }
 
     self.builtInDisplayID = builtIn;
+    [self arrangeBuiltInDisplayAtUpperRightOfExternalDisplay:builtIn];
 
     if (self.blackoutWindow == nil && !self.hasPreviousBrightness) {
         float brightness = 1.0f;
@@ -116,6 +124,7 @@ static void DisplayConfigurationCallback(CGDirectDisplayID display, CGDisplayCha
         if (brightnessChanged && self.hasPreviousBrightness) {
             [self setBrightness:self.previousBrightness forDisplay:builtIn];
         }
+        [self restoreDisplayArrangementIfNeeded];
         self.statusItem.button.title = @"Display Ready";
         [self showAlertWithTitle:@"Could not cover the internal display"
                          message:@"The app found the built-in display, but macOS did not expose a matching screen for the black cover. The display was not hidden."];
@@ -141,6 +150,7 @@ static void DisplayConfigurationCallback(CGDirectDisplayID display, CGDisplayCha
     [self.blackoutWindow orderOut:nil];
     self.blackoutWindow = nil;
     [self stopPointerGuard];
+    [self restoreDisplayArrangementIfNeeded];
 
     if (self.builtInDisplayID != kCGNullDirectDisplay && self.hasPreviousBrightness) {
         [self setBrightness:MAX(self.previousBrightness, 0.25f) forDisplay:self.builtInDisplayID];
@@ -188,6 +198,114 @@ static void DisplayConfigurationCallback(CGDirectDisplayID display, CGDisplayCha
     }
 
     return NO;
+}
+
+- (CGDirectDisplayID)preferredExternalDisplayID {
+    CGDirectDisplayID mainDisplay = CGMainDisplayID();
+    if (mainDisplay != kCGNullDirectDisplay && !CGDisplayIsBuiltin(mainDisplay)) {
+        return mainDisplay;
+    }
+
+    CGDisplayCount count = 0;
+    CGDirectDisplayID displays[kMaxDisplays] = {0};
+
+    CGError error = CGGetActiveDisplayList(kMaxDisplays, displays, &count);
+    if (error != kCGErrorSuccess) {
+        return kCGNullDirectDisplay;
+    }
+
+    CGDirectDisplayID bestDisplay = kCGNullDirectDisplay;
+    CGFloat bestArea = 0.0;
+
+    for (CGDisplayCount index = 0; index < count; index++) {
+        CGDirectDisplayID displayID = displays[index];
+        if (CGDisplayIsBuiltin(displayID)) {
+            continue;
+        }
+
+        CGRect bounds = CGDisplayBounds(displayID);
+        CGFloat area = CGRectGetWidth(bounds) * CGRectGetHeight(bounds);
+        if (bestDisplay == kCGNullDirectDisplay || area > bestArea) {
+            bestDisplay = displayID;
+            bestArea = area;
+        }
+    }
+
+    return bestDisplay;
+}
+
+- (void)saveDisplayArrangementIfNeeded {
+    if (self.hasSavedDisplayArrangement) {
+        return;
+    }
+
+    CGDisplayCount count = 0;
+    CGDirectDisplayID displays[kMaxDisplays] = {0};
+
+    CGError error = CGGetActiveDisplayList(kMaxDisplays, displays, &count);
+    if (error != kCGErrorSuccess) {
+        return;
+    }
+
+    self.savedDisplayOrigins = [NSMutableDictionary dictionary];
+    for (CGDisplayCount index = 0; index < count; index++) {
+        CGDirectDisplayID displayID = displays[index];
+        CGRect bounds = CGDisplayBounds(displayID);
+        self.savedDisplayOrigins[@(displayID)] = [NSValue valueWithPoint:NSMakePoint(CGRectGetMinX(bounds),
+                                                                                     CGRectGetMinY(bounds))];
+    }
+
+    self.hasSavedDisplayArrangement = YES;
+}
+
+- (BOOL)arrangeBuiltInDisplayAtUpperRightOfExternalDisplay:(CGDirectDisplayID)builtInDisplayID {
+    CGDirectDisplayID externalDisplayID = [self preferredExternalDisplayID];
+    if (externalDisplayID == kCGNullDirectDisplay || externalDisplayID == builtInDisplayID) {
+        return NO;
+    }
+
+    [self saveDisplayArrangementIfNeeded];
+
+    CGRect externalBounds = CGDisplayBounds(externalDisplayID);
+    CGRect builtInBounds = CGDisplayBounds(builtInDisplayID);
+    int32_t builtInX = (int32_t)lrint(CGRectGetMaxX(externalBounds));
+    int32_t builtInY = (int32_t)lrint(CGRectGetMinY(externalBounds) - CGRectGetHeight(builtInBounds));
+
+    CGDisplayConfigRef config = NULL;
+    if (CGBeginDisplayConfiguration(&config) != kCGErrorSuccess || config == NULL) {
+        return NO;
+    }
+
+    CGError configureError = CGConfigureDisplayOrigin(config, builtInDisplayID, builtInX, builtInY);
+    CGError completeError = CGCompleteDisplayConfiguration(config, kCGConfigureForSession);
+    return configureError == kCGErrorSuccess && completeError == kCGErrorSuccess;
+}
+
+- (void)restoreDisplayArrangementIfNeeded {
+    if (!self.hasSavedDisplayArrangement || self.savedDisplayOrigins.count == 0) {
+        return;
+    }
+
+    CGDisplayConfigRef config = NULL;
+    if (CGBeginDisplayConfiguration(&config) != kCGErrorSuccess || config == NULL) {
+        return;
+    }
+
+    BOOL configuredAnyDisplay = NO;
+    for (NSNumber *displayNumber in self.savedDisplayOrigins) {
+        NSValue *originValue = self.savedDisplayOrigins[displayNumber];
+        NSPoint origin = originValue.pointValue;
+        CGDirectDisplayID displayID = displayNumber.unsignedIntValue;
+        if (CGConfigureDisplayOrigin(config, displayID, (int32_t)lrint(origin.x), (int32_t)lrint(origin.y)) == kCGErrorSuccess) {
+            configuredAnyDisplay = YES;
+        }
+    }
+
+    CGError completeError = CGCompleteDisplayConfiguration(config, kCGConfigureForSession);
+    if (configuredAnyDisplay && completeError == kCGErrorSuccess) {
+        self.hasSavedDisplayArrangement = NO;
+        self.savedDisplayOrigins = nil;
+    }
 }
 
 - (void)handleDisplayConfigurationChanged {
@@ -344,20 +462,95 @@ static void DisplayConfigurationCallback(CGDirectDisplayID display, CGDisplayCha
 
 - (BOOL)startPointerGuard {
     [self stopPointerGuard];
-    if (![self startPointerEventTap]) {
-        [self startPointerEventMonitors];
-        if (!self.pointerPermissionAlertShown) {
-            self.pointerPermissionAlertShown = YES;
-            [self showAlertWithTitle:@"Pointer guard needs permission"
-                             message:@"macOS did not allow the app to create a pointer event tap. Give this app Accessibility or Input Monitoring permission, then quit and reopen it."];
-        }
-        return NO;
+    if ([self startPointerEventTap]) {
+        self.pointerGuardActive = YES;
+        [self movePointerToExternalDisplayIfNeededFromDisplay:self.builtInDisplayID];
+        return YES;
     }
-    [self movePointerToExternalDisplayIfNeededFromDisplay:self.builtInDisplayID];
-    return YES;
+
+    // The event tap could not be created yet (usually missing Accessibility
+    // permission). Fall back to best-effort monitors and keep retrying so the
+    // guard activates automatically once permission is granted — no relaunch
+    // needed.
+    self.pointerGuardActive = NO;
+    [self startPointerEventMonitors];
+    [self schedulePointerGuardRetry];
+    if (!self.pointerPermissionAlertShown) {
+        self.pointerPermissionAlertShown = YES;
+        [self promptForPointerPermission];
+    }
+    return NO;
+}
+
+- (void)schedulePointerGuardRetry {
+    if (self.pointerGuardRetryScheduled) {
+        return;
+    }
+    self.pointerGuardRetryScheduled = YES;
+    [self schedulePointerGuardRetryTick];
+}
+
+- (void)schedulePointerGuardRetryTick {
+    __weak AppDelegate *weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        [weakSelf attemptPointerGuardRetry];
+    });
+}
+
+- (void)attemptPointerGuardRetry {
+    if (!self.wantsInternalDisplayHidden || self.blackoutWindow == nil) {
+        self.pointerGuardRetryScheduled = NO;
+        return;
+    }
+
+    if (self.pointerGuardActive) {
+        self.pointerGuardRetryScheduled = NO;
+        return;
+    }
+
+    if ([self startPointerEventTap]) {
+        // Permission was granted while running; drop the fallback monitors and
+        // switch to the authoritative event tap.
+        if (self.globalPointerMonitor != nil) {
+            [NSEvent removeMonitor:self.globalPointerMonitor];
+            self.globalPointerMonitor = nil;
+        }
+        if (self.localPointerMonitor != nil) {
+            [NSEvent removeMonitor:self.localPointerMonitor];
+            self.localPointerMonitor = nil;
+        }
+        self.pointerGuardActive = YES;
+        self.pointerGuardRetryScheduled = NO;
+        [self movePointerToExternalDisplayIfNeededFromDisplay:self.builtInDisplayID];
+        self.statusItem.button.title = @"Internal Hidden";
+        return;
+    }
+
+    [self schedulePointerGuardRetryTick];
+}
+
+- (void)promptForPointerPermission {
+    NSDictionary *options = @{(__bridge NSString *)kAXTrustedCheckOptionPrompt: @YES};
+    BOOL trusted = AXIsProcessTrustedWithOptions((__bridge CFDictionaryRef)options);
+    if (trusted) {
+        // Already trusted — the retry loop will pick up the tap shortly.
+        return;
+    }
+
+    [self showAlertWithTitle:@"Pointer guard needs permission"
+                     message:@"Grant this app Accessibility permission in System Settings ▸ Privacy & Security ▸ Accessibility. The pointer guard turns on automatically once you do — no need to relaunch. Use the menu bar item's “Open Accessibility Settings” command if the list does not show this app."];
+}
+
+- (IBAction)openAccessibilitySettings:(id)sender {
+    NSURL *url = [NSURL URLWithString:@"x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"];
+    if (url != nil) {
+        [[NSWorkspace sharedWorkspace] openURL:url];
+    }
 }
 
 - (void)stopPointerGuard {
+    self.pointerGuardActive = NO;
+    self.pointerGuardRetryScheduled = NO;
     if (self.pointerEventTap != NULL) {
         CFMachPortInvalidate(self.pointerEventTap);
         CFRelease(self.pointerEventTap);

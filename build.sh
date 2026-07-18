@@ -12,6 +12,7 @@ clang "$ROOT/Sources/InternalDisplayOff/main.m" \
   -o "$EXECUTABLE" \
   -fobjc-arc \
   -framework Cocoa \
+  -framework ApplicationServices \
   -framework CoreGraphics \
   -framework IOKit
 
