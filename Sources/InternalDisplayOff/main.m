@@ -537,8 +537,12 @@ static void DisplayConfigurationCallback(CGDirectDisplayID display, CGDisplayCha
         return;
     }
 
+    // A common gotcha with ad-hoc-signed builds: the Accessibility toggle can
+    // still appear ON in the list, but it points at a previous build's code
+    // signature. Rebuilding changes the signature, so macOS treats it as a
+    // different app and the stale grant no longer applies.
     [self showAlertWithTitle:@"Pointer guard needs permission"
-                     message:@"Grant this app Accessibility permission in System Settings ▸ Privacy & Security ▸ Accessibility. The pointer guard turns on automatically once you do — no need to relaunch. Use the menu bar item's “Open Accessibility Settings” command if the list does not show this app."];
+                     message:@"Grant this app Accessibility permission in System Settings ▸ Privacy & Security ▸ Accessibility. The pointer guard turns on automatically once you do — no relaunch needed.\n\nIf the app already appears with its switch ON but this message keeps showing, the grant is stale from an earlier build: select it in the list, remove it with the “−” button, then relaunch and grant again (or run “tccutil reset Accessibility local.codex.InternalDisplayOff” in Terminal)."];
 }
 
 - (IBAction)openAccessibilitySettings:(id)sender {

@@ -34,6 +34,15 @@ The pointer guard uses a `CGEventTap` at the HID event layer when macOS allows i
 
 If the event tap cannot be created because Accessibility permission has not been granted yet, the app keeps retrying in the background and switches to the HID event tap automatically as soon as permission is granted — no relaunch required. Use the menu bar item's "Open Accessibility Settings" command to jump straight to the permission list.
 
+### Keeping the permission across rebuilds
+
+By default `build.sh` signs the app ad-hoc. Ad-hoc signatures change their code hash on every build, so macOS treats each rebuild as a *different* app: the Accessibility toggle may still look ON, but the grant is stale and the pointer guard keeps reporting "Needs Pointer Permission".
+
+Two ways to deal with it:
+
+- **Quick unblock after a rebuild:** remove the app from System Settings ▸ Privacy & Security ▸ Accessibility with the "−" button (or run `tccutil reset Accessibility local.codex.InternalDisplayOff`), then relaunch and grant again.
+- **Permanent fix:** run `./create-signing-identity.sh` once to create a stable self-signed code-signing identity. After that `build.sh` signs with it automatically, and the Accessibility grant survives future rebuilds — you only grant permission once.
+
 When hiding the internal display, the app also saves the current display arrangement and moves the built-in display to the upper-right corner of the preferred external display for the current login session. Restoring the display or quitting the app normally restores the saved arrangement.
 
 Brightness control uses private DisplayServices symbols when available because newer Apple Silicon display paths may reject older IOKit brightness calls. IOKit is still kept as a fallback for older systems and configurations.
